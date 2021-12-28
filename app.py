@@ -4,8 +4,22 @@ import socket
 import sys
 import os
 import keyboard
-from clock import Clock
 import traceback
+
+
+class Clock:
+    def __init__(self, tps):
+        self.tps = tps
+        self.last = time.time()
+
+    def tick(self):
+        now = time.time()
+        tick_rate = 1.0 / self.tps
+        diff = now - self.last
+        recover = tick_rate - diff
+        if recover > 0:
+            time.sleep(recover)
+        self.last = time.time()
 
 
 class App:
@@ -14,12 +28,9 @@ class App:
         self.running = True
         self.port = port
         self.host = host
-        # first thing to grab from server
-        # NOTE: bool(0) == False
-        self.client_id = 0
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:  # try to connect to server
-            self.connecting = True  # decoration
+            self.connecting = True  # loading decoration
             sys.stdout.write(
                 "\u001b[30;1m-- \u001b[32;1mConnecting to \u001b[37;1m" + self.host + "\u001b[0m")
             threading.Thread(target=self.visual_loading,
@@ -42,13 +53,14 @@ class App:
             exit()  # exit program
 
         try:  # get client index from server
-            index, server_size, * \
-                _ = self.socket.recv(1024).decode("utf-8").split()
+            raw = self.socket.recv(1024).decode("utf-8")
+            index, server_size, content = raw.split("$")
             if index == "":
                 raise ConnectionResetError
             else:
-                self.client_id = int(index)  # from server
+                self.cid = int(index)  # from server
                 self.server_size = int(server_size)
+                self.update(content)  # content is single string
         except ConnectionResetError:
             self.running = False
             self.connecting = False
@@ -56,26 +68,18 @@ class App:
             print("\n-- Disconnected from server --")
             exit()
 
-        with open("map.txt", "r") as f:  # read map from file
-            def func(item):
-                return list(item)
-            self.content = list(map(func, f.readlines()))
-        # player like info
-        for line in self.content:
-            if str(self.client_id) in line:
-                self.player_y = self.content.index(line)
-                self.player_x = line.index(str(self.client_id))
-                break
-        if not hasattr(self, "player_x"):
+        def func(item):
+            return list(item)
+        self.content = list(map(func, content.split("\n")))
+
+        if self.cid > self.server_size:
             self.running = False
             self.socket.close()
             print("\n\u001b[30;1m-- \u001b[37;1mServer is full \u001b[30;1m--")
             print(
                 "\u001b[30;1m==  \u001b[31;1mDisconnected  \u001b[30;1m==\u001b[0m")
             exit()
-        self.inventory = []
 
-        self.update()
         threading.Thread(target=self.rpc_listen, name="RPC Listen").start()
         self.mainloop()
 
@@ -95,17 +99,20 @@ class App:
             time.sleep(0.1)
         print("." * (3 - i) + "\u001b[0m")  # also newline
 
-    def update(self):
-        first, *rest = self.content
-        sys.stdout.write("".join(first))
-        for line in rest:
-            sys.stdout.write("".join(line))
-        sys.stdout.write(f"\u001b[{len(self.content) -1}A\r")
+    def update(self, content):
+        print(content, end="\u001b[9A\r")
 
-    def rpc_send(self, attr):
-        string = f"{self.client_id} {attr} {getattr(self, attr)}"
+    def rpc_send(self, attr, value):
+        string = f"{self.cid}${attr}${value}"
         data = bytes(string, "utf-8")
-        self.socket.send(data)
+        try:
+            self.socket.send(data)
+        except ConnectionResetError:
+            self.running = False
+            self.socket.close()
+            time.sleep(0.5)
+            print(
+                "\u001b[30;1m-- \u001b[37;1mDisconnected or kicked \u001b[30;1m--\u001b[0m\n")
 
     def rpc_listen(self):
         while self.running:
@@ -114,77 +121,55 @@ class App:
                 if not msg:  # if empty msg
                     continue
                 self.on_recv(msg.decode("utf-8"))
-            except Exception as error:
-                time.sleep(1)
-                print(
-                    f"Client [{self.client_id}] had an unexpected error: {error}")
-                traceback.print_exc()
-                time.sleep(5)
-                return
+            except (Exception, ConnectionResetError) as error:
+                self.running = False
+                self.socket.close()
+                if type(error) is ConnectionResetError:
+                    time.sleep(0.5)
+                    print(
+                        "\u001b[30;1m-- \u001b[37;1mDisconnected or kicked \u001b[30;1m--\u001b[0m\n")
+                    return
+                else:
+                    time.sleep(0.5)
+                    print(
+                        f"Client [{self.cid}] had an unexpected error: {error}")
+                    traceback.print_exc()
+                    print()
+                    time.sleep(3)
+                    return
 
     def on_recv(self, msg):
-        cid, attr, value, *_ = msg.split()
-        #setattr(self.clients[cid], attr, value)
-        # player like info
-        for line in self.content:
-            if str(cid) in line:
-                player_y = self.content.index(line)
-                player_x = line.index(str(cid))
-                break
+        # changed to recv whole map
+        # maybe do so if start with "$"
+        # then do checks to check special request
+        # could be inventory data from server
         try:
-            # NOTE: ALLWAYS EMPTY STRING
-            assert player_x
-            self.content[player_y][player_x] = " "
-            if attr == "player_x":
-                player_x = int(value)
-            elif attr == "player_y":
-                player_y = int(value)
-            self.content[player_y][player_x] = str(cid)
-        except (NameError, IndexError) as error:
-            time.sleep(1)
-            print(error, end="")
-            time.sleep(3)
-            return
+            # rest is either possible duplicant or possibly double message combined
+            attr, value, *_rest = msg.split("$")
+        except ValueError:
+            return  # ignore error
+        if attr.startswith("content"):
+            self.content = value
+            self.update(value)
 
     def mainloop(self):
-        clock = Clock(16)
+        clock = Clock(8)
         while self.running:
-            # y
-            old_y = self.player_y
-            if keyboard.is_pressed("w"):
-                self.player_y -= 1
-            if keyboard.is_pressed("s"):
-                self.player_y += 1
-            curr = self.content[self.player_y][self.player_x]
-            if curr == " ":
-                # edit last pos
-                self.content[old_y][self.player_x] = curr
-                self.content[self.player_y][self.player_x] = str(
-                    self.client_id)
-                self.rpc_send("player_y")
-            else:
-                self.player_y = old_y
-            # x
-            old_x = self.player_x
-            if keyboard.is_pressed("a"):
-                self.player_x -= 1
-            if keyboard.is_pressed("d"):
-                self.player_x += 1
-            curr = self.content[self.player_y][self.player_x]
-            if curr == " ":
-                # edit last pos
-                self.content[self.player_y][old_x] = curr
-                self.content[self.player_y][self.player_x] = str(
-                    self.client_id)
-                self.rpc_send("player_x")
-            else:
-                self.player_x = old_x
-            self.update()
             clock.tick()
+            # y-axis
+            if keyboard.is_pressed("w"):
+                self.rpc_send("y", -1)
+            if keyboard.is_pressed("s"):
+                self.rpc_send("y", 1)
+            # x-axis
+            if keyboard.is_pressed("a"):
+                self.rpc_send("x", -1)
+            if keyboard.is_pressed("d"):
+                self.rpc_send("x", 1)
 
 
 if __name__ == "__main__":
     # activate ANSI ESCAPE codes
     os.system("")
     # init
-    app = App(port=5050)
+    app = App(port=5050, host="127.0.0.1")
