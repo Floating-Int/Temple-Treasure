@@ -4,7 +4,6 @@ import socket
 import sys
 import os
 import keyboard
-import traceback
 
 
 class Clock:
@@ -102,7 +101,7 @@ class App:
     def update(self, content):
         print(content, end="\u001b[9A\r")
 
-    def rpc_send(self, attr, value):
+    def rpc_send(self, attr: str, value):
         string = f"{self.cid}${attr}${value}"
         data = bytes(string, "utf-8")
         try:
@@ -112,7 +111,7 @@ class App:
             self.socket.close()
             time.sleep(0.5)
             print(
-                "\u001b[30;1m-- \u001b[37;1mDisconnected or kicked \u001b[30;1m--\u001b[0m\n")
+                "\u001b[30;1m-- \u001b[31;1mDisconnected or kicked \u001b[30;1m--\u001b[0m\n")
 
     def rpc_listen(self):
         while self.running:
@@ -121,7 +120,7 @@ class App:
                 if not msg:  # if empty msg
                     continue
                 self.on_recv(msg.decode("utf-8"))
-            except (Exception, ConnectionResetError) as error:
+            except ConnectionResetError as error:
                 self.running = False
                 self.socket.close()
                 if type(error) is ConnectionResetError:
@@ -130,27 +129,37 @@ class App:
                         "\u001b[30;1m-- \u001b[37;1mDisconnected or kicked \u001b[30;1m--\u001b[0m\n")
                     return
                 else:
+                    self.running = False
+                    self.socket.close()
                     time.sleep(0.5)
                     print(
-                        f"Client [{self.cid}] had an unexpected error: {error}")
-                    traceback.print_exc()
-                    print()
-                    time.sleep(3)
+                        f"\u001b[31;1m[Error] \u001b[37;1mEncountered unknow bug\u001b[0m")
                     return
 
-    def on_recv(self, msg):
-        # changed to recv whole map
-        # maybe do so if start with "$"
-        # then do checks to check special request
-        # could be inventory data from server
+    def on_recv(self, message: str):
+        """Receives information from server as one string.
+        Message is then split on '$' to unpack attr and value
+
+        Args:
+            message (str): message received
+        """
         try:
             # rest is either possible duplicant or possibly double message combined
-            attr, value, *_rest = msg.split("$")
+            attr, value, *_rest = message.split("$")
         except ValueError:
-            return  # ignore error
+            return  # ignore error. ignore request
         if attr.startswith("content"):
             self.content = value
             self.update(value)
+        elif attr.startswith("kick"):
+            self.running = False
+            self.socket.close()
+            time.sleep(0.5)
+            print(
+                "\u001b[30;1m-- \u001b[31;1mKicked from server \u001b[30;1m--\u001b[0m\n")
+        elif attr.startswith("finished"):
+            print("\u001b[3B\u001b[62C" + "\u001b[32;1m" +
+                  "Finished" + "\u001b[0m" + "\u001b[3A", end="\r")
 
     def mainloop(self):
         clock = Clock(8)

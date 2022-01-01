@@ -30,6 +30,31 @@ class ClientInfo:
         self.address = None
 
 
+class Structure:
+    symbol = "^"  # error symbol
+
+    def __init__(self, id: int, color: str, x: int, y: int):
+        self.id = id
+        self.color = color
+        self.x = x
+        self.y = y
+
+    def __repr__(self):
+        return self.color + self.symbol + "\u001b[0m"
+
+
+class Goal(Structure):
+    symbol = "?"
+
+
+class Key(Structure):
+    symbol = "!"
+
+
+class Door(Structure):
+    symbol = "&"
+
+
 class Server:
 
     def __init__(self, server_size: int = 2, host: str = "vps.i-h.no", port: int = 5050):
@@ -54,6 +79,28 @@ class Server:
                     client = ClientInfo(cid, x, y)
                     self.clients.append(client)
                     break
+        # set keys, doors and goal manually, for now...
+        self.keys = [
+            Key(1, "\u001b[32m", 4, 8),
+            Key(2, "\u001b[35m", 3, 4),
+            Key(3, "\u001b[33m", 17, 8),
+            Key(4, "\u001b[34m", 45, 1),
+            Key(5, "\u001b[36m", 13, 1)
+        ]
+        self.doors = [
+            Door(1, "\u001b[32m", 8, 4),
+            Door(2, "\u001b[35m", 5, 6),
+            Door(3, "\u001b[33m", 37, 2),
+            Door(4, "\u001b[34m", 21, 3),
+            Door(5, "\u001b[36m", 52, 7)
+        ]
+        self.goal = Goal(-1, "\u001b[35m", 55, 2)
+        self.objects = self.keys + self.doors + [self.goal]
+        for obj in self.objects:
+            x, y = obj.x, obj.y
+            self.content[y][x] = obj.color + obj.symbol + "\u001b[0m"
+        # ---
+
         # connect
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -69,6 +116,8 @@ class Server:
         # start server
         self.running = True
         threading.Thread(target=self.handle_clients).start()  # looping
+
+        # server commands
         while self.running:
             string = input("")
             do_shutdown = False
@@ -80,8 +129,10 @@ class Server:
                     if self.clients[client_id].socket != None:
                         print(
                             f"- Kicking client [{self.clients[client_id].address[1]}]")
-                        # cause error later
+                        # tell client to disconnect
                         # clear later
+                        self.rpc_send(self.clients[client_id], "kick", 1)
+                        # FIXME: send msg to client so it disconnects
                         self.clients[client_id].socket.close()
                     else:
                         print(
@@ -125,7 +176,7 @@ class Server:
                         client.address = address
                         client.socket = clientsocket
                         break
-            except BrokenPipeError:
+            except ConnectionError:
                 client.clear()  # clear info
 
             def func(): self.handle_recv(client)  # lambda
@@ -154,7 +205,7 @@ class Server:
         self.socket.close()
         print("-- Server shutdown --")
 
-    def stringify(self, content: list[list[str, ...], ...]) -> str:
+    def stringify(self, content: list) -> str:
         """Stringifies content from 2D array (with str elements)
 
         Args:
@@ -169,7 +220,7 @@ class Server:
             value += "\n" + "".join(line)
         return value
 
-    def handle_recv(self, client):
+    def handle_recv(self, client: ClientInfo):
         while self.running:
             try:
                 request = client.socket.recv(1024)  # is bytes
@@ -186,54 +237,136 @@ class Server:
                 return
             self.handle_request(client, request.decode("utf-8"))
 
-    def handle_request(self, client, request):
+    def handle_request(self, client: ClientInfo, request: str):
         cid, attr, value, *_rest = request.split("$")
         print(cid, attr, value)
         # if _rest:
         #     print("REST", _rest)
         client = self.clients[int(cid) - 1]
+
+        # x-axis
         if attr.startswith("x"):
             try:
-                curr = self.content[client.y][client.x + int(value)]
+                # clamp between 1 and -1. won't be 0
+                num = min(max(int(value), -1), 1)
+                curr = self.content[client.y][client.x + num]
             except IndexError:
                 return  # ignores error
+
             if curr == " ":
                 # edit last pos
                 self.content[client.y][client.x] = curr
-                self.content[client.y][client.x + int(value)] = str(client.id)
-                client.x += int(value)
+                self.content[client.y][client.x + num] = str(client.id)
+                client.x += num
+
+            elif Key.symbol in curr:
+                for key in self.keys:
+                    print((key.x, key.y), (client.x + num, client.y))
+                    if (key.x, key.y) == (client.x + num, client.y):
+                        client.inventory.append(key)
+                        break
+                self.content[client.y][client.x] = " "
+                self.content[client.y][client.x + num] = str(client.id)
+                client.x += num
+                print(client.id, "gained key:", client.inventory)
+
+            elif Door.symbol in curr:
+                for door in self.doors:
+                    if (door.x, door.y) == (client.x + num, client.y):
+                        # got current door
+                        for item in client.inventory:
+                            if type(item) == Key:
+                                if door.id == item.id:
+                                    # do stuff
+                                    client.inventory.remove(item)
+                                    self.content[client.y][client.x] = " "
+                                    self.content[
+                                        client.y][client.x + num] = str(client.id)
+                                    client.x += num
+                                    break
+                        break
+
+            elif Goal.symbol in curr:
+                self.content[client.y][client.x] = " "
+                self.content[client.y][client.x + num] = str(client.id)
+                client.x += num
+                message = f"{'finished'}${1}"
+                data = bytes(message, "utf-8")
+                self.broadcast(data)
+                print("= Game finished!")
+
+        # y-axis
         elif attr.startswith("y"):
             try:
-                curr = self.content[client.y + int(value)][client.x]
+                # clamp between 1 and -1. won't be 0
+                num = min(max(int(value), -1), 1)
+                curr = self.content[client.y + num][client.x]
             except IndexError:
-                return  # ignores error
+                return  # ignore error. ignore request
+
             if curr == " ":
                 # edit last pos
                 self.content[client.y][client.x] = curr
-                self.content[client.y + int(value)][client.x] = str(client.id)
-                client.y += int(value)
-        # broadcast content
-        message = "content$" + self.stringify(self.content)
-        self.broadcast(client, bytes(message, "utf-8"))
+                self.content[client.y + num][client.x] = str(client.id)
+                client.y += num
 
-    def broadcast(self, sender, message: bytes):  # message is bytes
+            elif Key.symbol in curr:
+                for key in self.keys:
+                    print((key.x, key.y), (client.x, client.y + num))
+                    if (key.x, key.y) == (client.x, client.y + num):
+                        client.inventory.append(key)
+                        break
+                self.content[client.y][client.x] = " "
+                self.content[client.y + num][client.x] = str(client.id)
+                client.y += num
+                print(client.id, "gained key:", client.inventory)
+
+            elif Door.symbol in curr:
+                for door in self.doors:
+                    if (door.x, door.y) == (client.x, client.y + num):
+                        # got current door
+                        for item in client.inventory:
+                            if type(item) == Key:
+                                if door.id == item.id:
+                                    # do stuff
+                                    client.inventory.remove(item)
+                                    self.content[client.y][client.x] = " "
+                                    self.content[
+                                        client.y + num][client.x] = str(client.id)
+                                    client.y += num
+                                    break
+                        break
+
+            elif Goal.symbol in curr:
+                self.content[client.y][client.x] = " "
+                self.content[client.y + num][client.x] = str(client.id)
+                client.y += num
+                message = f"{'finished'}${1}"
+                data = bytes(message, "utf-8")
+                self.broadcast(data)
+                print("= Game finished!")
+
+        # broadcast content to all clients (updated version)
+        message = "content$" + self.stringify(self.content)
+        self.broadcast(bytes(message, "utf-8"))
+
+    def broadcast(self, message: bytes):  # message is bytes
         for client in self.clients:
-            # if client == sender:
-            #    continue
             if client.socket == None:
                 continue
             try:
                 client.socket.send(message)
-            except BrokenPipeError:
+            except ConnectionError:
                 client.clear()  # clear info
 
-    def rpc_send(self, client, message: str):
+    def rpc_send(self, client, attr: str, value):
         if client.socket == None:
             return
         try:
-            message = bytes(message, "utf-8")
-            client.socket.send(message)
-        except BrokenPipeError:
+            message = f"{attr}${value}"
+            data = bytes(message, "utf-8")
+            client.socket.send(data)
+        except ConnectionError:
             client.clear()  # clear info
 
 
