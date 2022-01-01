@@ -4,14 +4,30 @@ import socket
 import sys
 import os
 import keyboard
+from typing import Any
+
+
+__version__ = "2.1.1"
+__author__ = "FloatingInt"
 
 
 class Clock:
-    def __init__(self, tps):
+    """Clock to make sure the mainloop don't run too fast
+    """
+
+    def __init__(self, tps: float) -> None:
+        """Clock object to limit tick speed
+
+        Args:
+            tps (float): ticks per second
+        """
         self.tps = tps
         self.last = time.time()
 
-    def tick(self):
+    def tick(self) -> None:
+        """Waits until time since last tick is
+        greater than or equal to 1 second / ticks per second
+        """
         now = time.time()
         tick_rate = 1.0 / self.tps
         diff = now - self.last
@@ -22,8 +38,20 @@ class Clock:
 
 
 class App:
+    """App to play Temple Treasure.
+    Equivalent to a Client (serverside implementation)
+    """
 
-    def __init__(self, host="vps.i-h.no", port=5050):
+    def __init__(self, host="vps.i-h.no", port=5050) -> None:
+        """Init App (Client) and automatically start it
+
+        Args:
+            host (str, optional): server host. Defaults to "vps.i-h.no".
+            port (int, optional): server port. Defaults to 5050.
+
+        Raises:
+            ConnectionResetError: failed to recieve loading data from Server
+        """
         self.running = True
         self.port = port
         self.host = host
@@ -78,11 +106,13 @@ class App:
             print(
                 "\u001b[30;1m==  \u001b[31;1mDisconnected  \u001b[30;1m==\u001b[0m")
             exit()
-
+        # start visual loading...
         threading.Thread(target=self.rpc_listen, name="RPC Listen").start()
         self.mainloop()
 
-    def visual_loading(self):
+    def visual_loading(self) -> None:
+        """Decoration to show the connection state to Server
+        """
         i = 0
         sys.stdout.write("\u001b[30;1m")
         while self.connecting:
@@ -98,10 +128,25 @@ class App:
             time.sleep(0.1)
         print("." * (3 - i) + "\u001b[0m")  # also newline
 
-    def update(self, content):
+    def update(self, content: str) -> None:
+        """Updated content is rendered to screen
+
+        Args:
+            content (str): string to render to screen
+        """
         print(content, end="\u001b[9A\r")
 
-    def rpc_send(self, attr: str, value):
+    def rpc_send(self, attr: str, value: Any) -> None:
+        """Requesting the server to update
+
+        If the server does not respond, the request is treated as declined
+
+        Format: f"{attr}${value}"
+
+        Args:
+            attr (str): name of attribute to update
+            value (str): value to update atribute to
+        """
         string = f"{self.cid}${attr}${value}"
         data = bytes(string, "utf-8")
         try:
@@ -113,7 +158,9 @@ class App:
             print(
                 "\u001b[30;1m-- \u001b[31;1mDisconnected or kicked \u001b[30;1m--\u001b[0m\n")
 
-    def rpc_listen(self):
+    def rpc_listen(self) -> None:
+        """Listens to the server for updates or messages
+        """
         while self.running:
             try:
                 msg = self.socket.recv(1024)  # is bytes
@@ -136,7 +183,7 @@ class App:
                         f"\u001b[31;1m[Error] \u001b[37;1mEncountered unknow bug\u001b[0m")
                     return
 
-    def on_recv(self, message: str):
+    def on_recv(self, message: str) -> None:
         """Receives information from server as one string.
         Message is then split on '$' to unpack attr and value
 
@@ -161,7 +208,9 @@ class App:
             print("\u001b[3B\u001b[62C" + "\u001b[32;1m" +
                   "Finished" + "\u001b[0m" + "\u001b[3A", end="\r")
 
-    def mainloop(self):
+    def mainloop(self) -> None:
+        """Mainloop to handle input from the user
+        """
         clock = Clock(8)
         while self.running:
             clock.tick()

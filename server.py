@@ -3,16 +3,26 @@ import threading
 import socket
 import time
 import os
+from typing import Any
+
+
+__version__ = "2.1.1"
+__author__ = "FloatingInt"
 
 
 class ClientInfo:
-    def __init__(self, id: int, x: float, y: float):
+    """Used to store information about clients and game data associated.
+    Use method 'clear' to wipe socket related information.
+    Game data is never wiped
+    """
+
+    def __init__(self, id: int, x: int, y: int) -> None:
         """Client object to store client info
 
         Args:
             id (int): if of client on server
-            x (float): x position
-            y (float): y position
+            x (int): x position
+            y (int): y position
         """
         self.id = id
         self.x = x
@@ -31,33 +41,54 @@ class ClientInfo:
 
 
 class Structure:
+    """Base class for structures to interact with on the map
+
+    Returns:
+        Structure: subclass object of Structure
+    """
     symbol = "^"  # error symbol
 
-    def __init__(self, id: int, color: str, x: int, y: int):
+    def __init__(self, id: int, color: str, x: int, y: int) -> None:
         self.id = id
         self.color = color
         self.x = x
         self.y = y
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.color + self.symbol + "\u001b[0m"
 
 
 class Goal(Structure):
+    """Structure: Goal
+    """
     symbol = "?"
 
 
 class Key(Structure):
+    """Structure: Key
+    """
     symbol = "!"
 
 
 class Door(Structure):
+    """Structure: Door
+    """
     symbol = "&"
 
 
 class Server:
+    """Server to handle requests from clients and broadcasting of updates.
+    The middleman (serverside implementation)
+    """
 
-    def __init__(self, server_size: int = 2, host: str = "vps.i-h.no", port: int = 5050):
+    def __init__(self, server_size: int = 2, host: str = "vps.i-h.no", port: int = 5050) -> None:
+        """Init Server and automatically start it
+
+        Args:
+            server_size (int, optional): maximum allowed clients. Defaults to 2.
+            host (str, optional): server host. Defaults to "vps.i-h.no".
+            port (int, optional): server port. Defaults to 5050.
+        """
         self.running = True
         self.port = port
         self.host = host
@@ -152,7 +183,9 @@ class Server:
             if do_shutdown:
                 self.shutdown()
 
-    def handle_clients(self):
+    def handle_clients(self) -> None:
+        """Accepts client connections and starts a thread to handle recieve
+        """
         while self.running:
             try:
                 client = self.socket.accept()
@@ -183,7 +216,9 @@ class Server:
             threading.Thread(target=func).start()  # looping
             print(f"-- Client [{client.address[1]}] has connected --")
 
-    def shutdown(self):
+    def shutdown(self) -> None:
+        """Shutdown procedural to shutdown Server
+        """
         self.running = False
         # dummy join so cancel self.socket.accept
         print(f"Client size, size ({len(self.clients)})")
@@ -193,7 +228,7 @@ class Server:
         try:
             dummysock.connect((self.host, self.port))
             time.sleep(0.1)
-            print("- Connected dummy")
+            print("= Connected dummy")
         except ConnectionRefusedError:
             print("- Connection failed, continuing")
         # clear all sockets (including dummy)
@@ -203,13 +238,13 @@ class Server:
                 client.socket.close()
         # close socket
         self.socket.close()
-        print("-- Server shutdown --")
+        print("== Server shutdown ==")
 
     def stringify(self, content: list) -> str:
         """Stringifies content from 2D array (with str elements)
 
         Args:
-            content (list[list[str, ...], ...]): content to stringify
+            content (list): content to stringify
 
         Returns:
             str: content as one string
@@ -220,7 +255,13 @@ class Server:
             value += "\n" + "".join(line)
         return value
 
-    def handle_recv(self, client: ClientInfo):
+    def handle_recv(self, client: ClientInfo) -> None:
+        """Separate thread to handle recieve.
+        One thread per client
+
+        Args:
+            client (ClientInfo): client object to store data in
+        """
         while self.running:
             try:
                 request = client.socket.recv(1024)  # is bytes
@@ -237,7 +278,17 @@ class Server:
                 return
             self.handle_request(client, request.decode("utf-8"))
 
-    def handle_request(self, client: ClientInfo, request: str):
+    def handle_request(self, client: ClientInfo, request: str) -> None:
+        """Decision tree to determine what do do with a request from client
+
+        If the server does not respond, the request is treated as declined
+
+        Format of argument request: f"{attr}${value}"
+
+        Args:
+            client (ClientInfo): client object to store data in
+            request (str): request as string
+        """
         cid, attr, value, *_rest = request.split("$")
         print(cid, attr, value)
         # if _rest:
@@ -291,8 +342,7 @@ class Server:
                 self.content[client.y][client.x + num] = str(client.id)
                 client.x += num
                 message = f"{'finished'}${1}"
-                data = bytes(message, "utf-8")
-                self.broadcast(data)
+                self.broadcast(message)
                 print("= Game finished!")
 
         # y-axis
@@ -342,24 +392,41 @@ class Server:
                 self.content[client.y + num][client.x] = str(client.id)
                 client.y += num
                 message = f"{'finished'}${1}"
-                data = bytes(message, "utf-8")
-                self.broadcast(data)
+                self.broadcast(message)
                 print("= Game finished!")
 
         # broadcast content to all clients (updated version)
         message = "content$" + self.stringify(self.content)
-        self.broadcast(bytes(message, "utf-8"))
+        self.broadcast(message)
 
-    def broadcast(self, message: bytes):  # message is bytes
+    def broadcast(self, message: str) -> None:
+        """Broadcasts a message to all clients.
+        Message is recieved as bytes
+
+        Format: f"{attr}${value}"
+
+        Args:
+            message (str): message to broadcast
+        """
+        data = bytes(message, "utf-8")
         for client in self.clients:
             if client.socket == None:
                 continue
             try:
-                client.socket.send(message)
+                client.socket.send(data)
             except ConnectionError:
                 client.clear()  # clear info
 
-    def rpc_send(self, client, attr: str, value):
+    def rpc_send(self, client: ClientInfo, attr: str, value: Any) -> None:
+        """Send a message to a spesific client.
+
+        Format: f"{attr}${value}"
+
+        Args:
+            client (ClientInfo):  client object to store data in
+            attr (str): name of attribute to update
+            value (str): value to update atribute to
+        """
         if client.socket == None:
             return
         try:
